@@ -71,6 +71,16 @@ describe('Runnable(title, fn)', function(){
     })
   })
 
+  describe('#globals', function(){
+    it('should allow for whitelisting globals', function(done){
+      var test = new Runnable('foo', function(){});
+      test.async.should.be.equal(0);
+      test.sync.should.be.true;
+      test.globals(['foobar']);
+      test.run(done);
+    })
+  })
+
   describe('.run(fn)', function(){
     describe('when .pending', function(){
       it('should not invoke the callback', function(done){
@@ -93,7 +103,7 @@ describe('Runnable(title, fn)', function(){
 
           test.run(function(err){
             calls.should.equal(1);
-            test.duration.should.be.a('number');
+            test.duration.should.be.type('number');
             done(err);
           })
         })
@@ -213,11 +223,18 @@ describe('Runnable(title, fn)', function(){
       })
 
       it('should allow updating the timeout', function(done){
+        var callCount = 0;
+        var increment = function() {
+          callCount++;
+        };
         var test = new Runnable('foo', function(done){
-          this.timeout(10);
+          setTimeout(increment, 1);
+          setTimeout(increment, 100);
         });
+        test.timeout(10);
         test.run(function(err){
-          err.message.should.include('timeout');
+          err.should.be.ok;
+          callCount.should.equal(1);
           done();
         });
       })
@@ -225,5 +242,90 @@ describe('Runnable(title, fn)', function(){
       it('should allow a timeout of 0')
     })
 
+    describe('when fn returns a promise', function(){
+      describe('when the promise is fulfilled with no value', function(){
+        var fulfilledPromise = {
+          then: function (fulfilled, rejected) {
+            process.nextTick(fulfilled);
+          }
+        };
+
+        it('should invoke the callback', function(done){
+          var test = new Runnable('foo', function(){
+            return fulfilledPromise;
+          });
+
+          test.run(done);
+        })
+      })
+
+      describe('when the promise is fulfilled with a value', function(){
+        var fulfilledPromise = {
+          then: function (fulfilled, rejected) {
+            process.nextTick(function () {
+              fulfilled({});
+            });
+          }
+        };
+
+        it('should invoke the callback', function(done){
+          var test = new Runnable('foo', function(){
+            return fulfilledPromise;
+          });
+
+          test.run(done);
+        })
+      })
+
+      describe('when the promise is rejected', function(){
+        var expectedErr = new Error('fail');
+        var rejectedPromise = {
+          then: function (fulfilled, rejected) {
+            process.nextTick(function () {
+              rejected(expectedErr);
+            });
+          }
+        };
+
+        it('should invoke the callback', function(done){
+          var test = new Runnable('foo', function(){
+            return rejectedPromise;
+          });
+
+          test.run(function(err){
+            err.should.equal(expectedErr);
+            done();
+          });
+        })
+      })
+
+      describe('when the promise takes too long to settle', function(){
+        var foreverPendingPromise = {
+          then: function () { }
+        };
+
+        it('should give the timeout error', function(done){
+          var test = new Runnable('foo', function(){
+            return foreverPendingPromise;
+          });
+
+          test.timeout(10);
+          test.run(function(err){
+            err.should.be.ok;
+            done();
+          });
+        })
+      })
+    })
+
+    describe('when fn returns a non-promise', function(){
+      it('should invoke the callback', function(done){
+        var test = new Runnable('foo', function(){
+          return { then: "i ran my tests" };
+        });
+
+        test.run(done);
+      })
+    })
   })
 })

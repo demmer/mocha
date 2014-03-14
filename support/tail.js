@@ -24,13 +24,17 @@ var process = {};
 process.exit = function(status){};
 process.stdout = {};
 
+var uncaughtExceptionHandlers = [];
+
 /**
  * Remove uncaughtException listener.
  */
 
-process.removeListener = function(e){
+process.removeListener = function(e, fn){
   if ('uncaughtException' == e) {
     global.onerror = function() {};
+    var i = Mocha.utils.indexOf(uncaughtExceptionHandlers, fn);
+    if (i != -1) { uncaughtExceptionHandlers.splice(i, 1); }
   }
 };
 
@@ -42,7 +46,9 @@ process.on = function(e, fn){
   if ('uncaughtException' == e) {
     global.onerror = function(err, url, line){
       fn(new Error(err + ' (' + url + ':' + line + ')'));
+      return true;
     };
+    uncaughtExceptionHandlers.push(fn);
   }
 };
 
@@ -52,6 +58,11 @@ process.on = function(e, fn){
 
 var Mocha = global.Mocha = require('mocha'),
     mocha = global.mocha = new Mocha({ reporter: 'html' });
+
+// The BDD UI is registered by default, but no UI will be functional in the
+// browser without an explicit call to the overridden `mocha.ui` (see below).
+// Ensure that this default UI does not expose its methods to the global scope.
+mocha.suite.removeAllListeners('pre-require');
 
 var immediateQueue = []
   , immediateTimeout;
@@ -77,6 +88,18 @@ Mocha.Runner.immediately = function(callback) {
   if (!immediateTimeout) {
     immediateTimeout = setTimeout(timeslice, 0);
   }
+};
+
+/**
+ * Function to allow assertion libraries to throw errors directly into mocha.
+ * This is useful when running tests in a browser because window.onerror will
+ * only receive the 'message' attribute of the Error.
+ */
+mocha.throwError = function(err) {
+  Mocha.utils.forEach(uncaughtExceptionHandlers, function (fn) {
+    fn(err);
+  });
+  throw err;
 };
 
 /**
