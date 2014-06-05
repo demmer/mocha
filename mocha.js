@@ -991,6 +991,7 @@ module.exports = function(suite){
       var suite = suites[0];
       if (suite.pending) var fn = null;
       var test = new Test(title, fn);
+      test.file = file;
       suite.addTest(test);
       return test;
     };
@@ -1051,7 +1052,7 @@ module.exports = function(suite){
 
   suite.on('require', visit);
 
-  function visit(obj) {
+  function visit(obj, file) {
     var suite;
     for (var key in obj) {
       if ('function' == typeof obj[key]) {
@@ -1070,7 +1071,9 @@ module.exports = function(suite){
             suites[0].afterEach(fn);
             break;
           default:
-            suites[0].addTest(new Test(key, fn));
+            var test = new Test(key, fn);
+            test.file = file;
+            suites[0].addTest(test);
         }
       } else {
         var suite = Suite.create(suites[0], key);
@@ -1193,6 +1196,7 @@ module.exports = function(suite){
 
     context.test = function(title, fn){
       var test = new Test(title, fn);
+      test.file = file;
       suites[0].addTest(test);
       return test;
     };
@@ -1335,6 +1339,7 @@ module.exports = function(suite){
       var suite = suites[0];
       if (suite.pending) var fn = null;
       var test = new Test(title, fn);
+      test.file = file;
       suite.addTest(test);
       return test;
     };
@@ -1433,7 +1438,7 @@ function Mocha(options) {
   this.suite = new exports.Suite('', new exports.Context);
   this.ui(options.ui);
   this.bail(options.bail);
-  this.reporter(options.reporter);
+  this.reporter(options.reporter, options.reporterOptions);
   if (null != options.timeout) this.timeout(options.timeout);
   this.useColors(options.useColors)
   if (options.slow) this.slow(options.slow);
@@ -1483,10 +1488,10 @@ Mocha.prototype.addFile = function(file){
  * Set reporter to `reporter`, defaults to "dot".
  *
  * @param {String|Function} reporter name or constructor
+ * @param {Object} reporterOptions optional options
  * @api public
  */
-
-Mocha.prototype.reporter = function(reporter){
+Mocha.prototype.reporter = function(reporter, reporterOptions){
   if ('function' == typeof reporter) {
     this._reporter = reporter;
   } else {
@@ -1501,6 +1506,7 @@ Mocha.prototype.reporter = function(reporter){
     if (!_reporter) throw new Error('invalid reporter "' + reporter + '"');
     this._reporter = _reporter;
   }
+  this.options.reporterOptions = reporterOptions;
   return this;
 };
 
@@ -1730,7 +1736,16 @@ Mocha.prototype.run = function(fn){
   if (options.growl) this._growl(runner, reporter);
   exports.reporters.Base.useColors = options.useColors;
   exports.reporters.Base.inlineDiffs = options.useInlineDiffs;
-  return runner.run(fn);
+
+  function done(failures) {
+      if (reporter.done) {
+          reporter.done(failures, fn);
+      } else {
+          fn(failures);
+      }
+  }
+
+  return runner.run(done);
 };
 
 }); // module: mocha.js
@@ -3107,10 +3122,10 @@ function JSONReporter(runner) {
 
   runner.on('end', function(){
     var obj = {
-        stats: self.stats
-      , tests: tests.map(clean)
-      , failures: failures.map(clean)
-      , passes: passes.map(clean)
+      stats: self.stats,
+      tests: tests.map(clean),
+      failures: failures.map(clean),
+      passes: passes.map(clean)
     };
 
     process.stdout.write(JSON.stringify(obj, null, 2));
@@ -3128,11 +3143,13 @@ function JSONReporter(runner) {
 
 function clean(test) {
   return {
-      title: test.title
-    , fullTitle: test.fullTitle()
-    , duration: test.duration
+    title: test.title,
+    fullTitle: test.fullTitle(),
+    duration: test.duration,
+    err: test.err
   }
 }
+
 }); // module: reporters/json.js
 
 require.register("reporters/landing.js", function(module, exports, require){
@@ -3989,6 +4006,7 @@ require.register("reporters/xunit.js", function(module, exports, require){
 
 var Base = require('./base')
   , utils = require('../utils')
+  , fs = require('browser/fs')
   , escape = utils.escape;
 
 /**
@@ -4014,11 +4032,18 @@ exports = module.exports = XUnit;
  * @api public
  */
 
-function XUnit(runner) {
+function XUnit(runner, options) {
   Base.call(this, runner);
   var stats = this.stats
     , tests = []
     , self = this;
+
+  if (options.reporterOptions && options.reporterOptions.output) {
+      if (! fs.createWriteStream) {
+          throw new Error('file output not supported in browser');
+      }
+      self.fileStream = fs.createWriteStream(options.reporterOptions.output);
+  }
 
   runner.on('pending', function(test){
     tests.push(test);
@@ -4033,7 +4058,7 @@ function XUnit(runner) {
   });
 
   runner.on('end', function(){
-    console.log(tag('testsuite', {
+    self.write(tag('testsuite', {
         name: 'Mocha Tests'
       , tests: stats.tests
       , failures: stats.failures
@@ -4043,10 +4068,23 @@ function XUnit(runner) {
       , time: (stats.duration / 1000) || 0
     }, false));
 
-    tests.forEach(test);
-    console.log('</testsuite>');
+    tests.forEach(function(t) { self.test(t); });
+    self.write('</testsuite>');
   });
 }
+
+/**
+ * Override done to close the stream (if it's a file).
+ */
+XUnit.prototype.done = function(failures, fn) {
+    if (this.fileStream) {
+        this.fileStream.end(function() {
+            fn(failures);
+        });
+    } else {
+        fn(failures);
+    }
+};
 
 /**
  * Inherit from `Base.prototype`.
@@ -4059,10 +4097,21 @@ XUnit.prototype.constructor = XUnit;
 
 
 /**
+ * Write out the given line
+ */
+XUnit.prototype.write = function(line) {
+    if (this.fileStream) {
+        this.fileStream.write(line + '\n');
+    } else {
+        console.log(line);
+    }
+};
+
+/**
  * Output tag for the given `test.`
  */
 
-function test(test) {
+XUnit.prototype.test = function(test, ostream) {
   var attrs = {
       classname: test.parent.fullTitle()
     , name: test.title
@@ -4072,13 +4121,13 @@ function test(test) {
   if ('failed' == test.state) {
     var err = test.err;
     attrs.message = escape(err.message);
-    console.log(tag('testcase', attrs, false, tag('failure', attrs, false, cdata(err.stack))));
+    this.write(tag('testcase', attrs, false, tag('failure', attrs, false, cdata(err.stack))));
   } else if (test.pending) {
-    console.log(tag('testcase', attrs, false, tag('skipped', {}, true)));
+    this.write(tag('testcase', attrs, false, tag('skipped', {}, true)));
   } else {
-    console.log(tag('testcase', attrs, true) );
+    this.write(tag('testcase', attrs, true) );
   }
-}
+};
 
 /**
  * HTML tag helper.
@@ -4515,7 +4564,6 @@ Runner.prototype.checkGlobals = function(test){
   var ok = this._globals;
 
   var globals = this.globalProps();
-  var isNode = process.kill;
   var leaks;
 
   if (test) {
@@ -5067,7 +5115,7 @@ exports.create = function(parent, title){
 
 function Suite(title, parentContext) {
   this.title = title;
-  var context = function () {};
+  var context = function() {};
   context.prototype = parentContext;
   this.ctx = new context();
   this.suites = [];
@@ -5669,7 +5717,7 @@ function highlight(js) {
     .replace(/('.*?')/gm, '<span class="string">$1</span>')
     .replace(/(\d+\.\d+)/gm, '<span class="number">$1</span>')
     .replace(/(\d+)/gm, '<span class="number">$1</span>')
-    .replace(/\bnew *(\w+)/gm, '<span class="keyword">new</span> <span class="init">$1</span>')
+    .replace(/\bnew[ \t]+(\w+)/gm, '<span class="keyword">new</span> <span class="init">$1</span>')
     .replace(/\b(function|new|throw|return|var|if|else)\b/gm, '<span class="keyword">$1</span>')
 }
 
@@ -5825,12 +5873,12 @@ mocha.run = function(fn){
   if (query.grep) mocha.grep(query.grep);
   if (query.invert) mocha.invert();
 
-  return Mocha.prototype.run.call(mocha, function(){
+  return Mocha.prototype.run.call(mocha, function(err){
     // The DOM Document is not available in Web Workers.
     if (global.document) {
       Mocha.utils.highlightTags('code');
     }
-    if (fn) fn();
+    if (fn) fn(err);
   });
 };
 
