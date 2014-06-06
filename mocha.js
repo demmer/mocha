@@ -951,6 +951,7 @@ module.exports = function(suite){
 
     context.describe = context.context = function(title, fn){
       var suite = Suite.create(suites[0], title);
+      suite.file = file;
       suites.unshift(suite);
       fn.call(suite);
       suites.shift();
@@ -1175,6 +1176,7 @@ module.exports = function(suite){
     context.suite = function(title){
       if (suites.length > 1) suites.shift();
       var suite = Suite.create(suites[0], title);
+      suite.file = file;
       suites.unshift(suite);
       return suite;
     };
@@ -1303,6 +1305,7 @@ module.exports = function(suite){
 
     context.suite = function(title, fn){
       var suite = Suite.create(suites[0], title);
+      suite.file = file;
       suites.unshift(suite);
       fn.call(suite);
       suites.shift();
