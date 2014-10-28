@@ -1480,7 +1480,7 @@ function Mocha(options) {
   this.suite = new exports.Suite('', new exports.Context);
   this.ui(options.ui);
   this.bail(options.bail);
-  this.reporter(options.reporter);
+  this.reporter(options.reporter, options.reporterOptions);
   if (null != options.timeout) this.timeout(options.timeout);
   this.useColors(options.useColors)
   if (options.enableTimeouts !== null) this.enableTimeouts(options.enableTimeouts);
@@ -1531,10 +1531,10 @@ Mocha.prototype.addFile = function(file){
  * Set reporter to `reporter`, defaults to "spec".
  *
  * @param {String|Function} reporter name or constructor
+ * @param {Object} reporterOptions optional options
  * @api public
  */
-
-Mocha.prototype.reporter = function(reporter){
+Mocha.prototype.reporter = function(reporter, reporterOptions){
   if ('function' == typeof reporter) {
     this._reporter = reporter;
   } else {
@@ -1549,6 +1549,7 @@ Mocha.prototype.reporter = function(reporter){
     if (!_reporter) throw new Error('invalid reporter "' + reporter + '"');
     this._reporter = _reporter;
   }
+  this.options.reporterOptions = reporterOptions;
   return this;
 };
 
@@ -1803,7 +1804,16 @@ Mocha.prototype.run = function(fn){
   if (options.growl) this._growl(runner, reporter);
   exports.reporters.Base.useColors = options.useColors;
   exports.reporters.Base.inlineDiffs = options.useInlineDiffs;
-  return runner.run(fn);
+
+  function done(failures) {
+      if (reporter.done) {
+          reporter.done(failures, fn);
+      } else {
+          fn(failures);
+      }
+  }
+
+  return runner.run(done);
 };
 
 }); // module: mocha.js
@@ -4053,6 +4063,7 @@ require.register("reporters/xunit.js", function(module, exports, require){
 
 var Base = require('./base')
   , utils = require('../utils')
+  , fs = require('browser/fs')
   , escape = utils.escape;
 
 /**
@@ -4078,11 +4089,18 @@ exports = module.exports = XUnit;
  * @api public
  */
 
-function XUnit(runner) {
+function XUnit(runner, options) {
   Base.call(this, runner);
   var stats = this.stats
     , tests = []
     , self = this;
+
+  if (options.reporterOptions && options.reporterOptions.output) {
+      if (! fs.createWriteStream) {
+          throw new Error('file output not supported in browser');
+      }
+      self.fileStream = fs.createWriteStream(options.reporterOptions.output);
+  }
 
   runner.on('pending', function(test){
     tests.push(test);
@@ -4097,7 +4115,7 @@ function XUnit(runner) {
   });
 
   runner.on('end', function(){
-    console.log(tag('testsuite', {
+    self.write(tag('testsuite', {
         name: 'Mocha Tests'
       , tests: stats.tests
       , failures: stats.failures
@@ -4107,10 +4125,23 @@ function XUnit(runner) {
       , time: (stats.duration / 1000) || 0
     }, false));
 
-    tests.forEach(test);
-    console.log('</testsuite>');
+    tests.forEach(function(t) { self.test(t); });
+    self.write('</testsuite>');
   });
 }
+
+/**
+ * Override done to close the stream (if it's a file).
+ */
+XUnit.prototype.done = function(failures, fn) {
+    if (this.fileStream) {
+        this.fileStream.end(function() {
+            fn(failures);
+        });
+    } else {
+        fn(failures);
+    }
+};
 
 /**
  * Inherit from `Base.prototype`.
@@ -4123,10 +4154,21 @@ XUnit.prototype.constructor = XUnit;
 
 
 /**
+ * Write out the given line
+ */
+XUnit.prototype.write = function(line) {
+    if (this.fileStream) {
+        this.fileStream.write(line + '\n');
+    } else {
+        console.log(line);
+    }
+};
+
+/**
  * Output tag for the given `test.`
  */
 
-function test(test) {
+XUnit.prototype.test = function(test, ostream) {
   var attrs = {
       classname: test.parent.fullTitle()
     , name: test.title
@@ -4135,13 +4177,13 @@ function test(test) {
 
   if ('failed' == test.state) {
     var err = test.err;
-    console.log(tag('testcase', attrs, false, tag('failure', {}, false, cdata(escape(err.message) + "\n" + err.stack))));
+    this.write(tag('testcase', attrs, false, tag('failure', {}, false, cdata(escape(err.message) + "\n" + err.stack))));
   } else if (test.pending) {
-    console.log(tag('testcase', attrs, false, tag('skipped', {}, true)));
+    this.write(tag('testcase', attrs, false, tag('skipped', {}, true)));
   } else {
-    console.log(tag('testcase', attrs, true) );
+    this.write(tag('testcase', attrs, true) );
   }
-}
+};
 
 /**
  * HTML tag helper.
